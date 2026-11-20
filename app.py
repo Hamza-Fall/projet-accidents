@@ -9,7 +9,6 @@ En local :   python app.py    puis http://127.0.0.1:8050
 Déploiement : gunicorn app:server --timeout 300
 """
 import os
-import textwrap
 from functools import lru_cache
 
 import folium
@@ -40,6 +39,7 @@ COULEUR_GRAVITE = {"Tué": "#7B1E1E", "Blessé hospitalisé": "#E4572E", "Bless�
 COULEUR_ANNEE = {2022: "#9DB4C0", 2023: "#5B8DB8", 2024: "#1F4E79"}
 BLEU = "#1F4E79"
 SEUIL_POPULATION = 5000            # classement par habitant : communes de plus de 5 000 habitants (évite les petits nombres)
+IDS_GRAPHES = ["courbe", "heatmap", "gravite", "communes", "nuage", "table"]
 
 
 def fr(x, n=0):
@@ -68,36 +68,37 @@ donnees(tuple(ANNEES), tuple(DEPARTEMENTS), True, "Tous")
 
 
 # ----------------------------------------------------------------------------
-# Graphiques
+# Graphiques (le titre et le sous-titre sont affichés en HTML au-dessus du graphique : ils ne peuvent plus être coupés)
 # ----------------------------------------------------------------------------
 JOURS_LONG = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 COULEUR_TITRE = "#111827"
-TAILLE_TITRE = 24
-TAILLE_SOUS_TITRE = 15
 COULEUR_SOUS_TITRE = "#374151"
 TAILLE_TEXTE = 14
 TAILLE_AXES = 13
 
 
 def style(fig, titre, legende=False, sous_titre=None):
-    """Titre-message en gras (24 px, 2 lignes max) + contexte en gris foncé (15 px) ; textes d'axes à 13 px ; légende sous le titre."""
-    lignes = textwrap.wrap(titre, 38)[:2] if titre else []
-    texte = "<b>" + "<br>".join(lignes) + "</b>" if lignes else ""
-    haut = 14 + 32 * len(lignes)
-    if sous_titre:
-        texte += f"<br><span style='font-size:{TAILLE_SOUS_TITRE}px;color:{COULEUR_SOUS_TITRE}'>{sous_titre}</span>"
-        haut += 26
-    if legende:
-        haut += 38
+    """Mise en forme commune. Le titre est mémorisé dans fig.layout.meta et affiché par entete() au-dessus du graphique."""
     fig.update_layout(template="plotly_white", autosize=True, height=None, showlegend=legende,
                       font=dict(size=TAILLE_TEXTE), hoverlabel=dict(font_size=TAILLE_TEXTE),
-                      title=dict(text=texte, x=0, xanchor="left", y=1, yanchor="top", pad=dict(t=12, l=16),
-                                 font=dict(size=TAILLE_TITRE, color=COULEUR_TITRE)),
-                      margin=dict(t=haut + 20, l=70, r=28, b=56),
+                      title=dict(text=""), meta=dict(titre=titre, sous=sous_titre or ""),
+                      margin=dict(t=54 if legende else 20, l=70, r=28, b=56),
                       legend=dict(orientation="h", x=0, y=1.0, yanchor="bottom", font=dict(size=TAILLE_TEXTE)))
     fig.update_xaxes(tickfont=dict(size=TAILLE_AXES), title_font=dict(size=TAILLE_TEXTE))
     fig.update_yaxes(tickfont=dict(size=TAILLE_AXES), title_font=dict(size=TAILLE_TEXTE))
     return fig
+
+
+def entete(fig):
+    """Titre-message (gras, 22 px) + contexte (15 px) à placer au-dessus du graphique."""
+    meta = fig.layout.meta or {}
+    titre, sous = meta.get("titre", ""), meta.get("sous", "")
+    if not titre:
+        return []
+    enfants = [html.Div(titre, style={"fontSize": "22px", "fontWeight": "bold", "color": COULEUR_TITRE, "lineHeight": "1.25"})]
+    if sous:
+        enfants.append(html.Div(sous, style={"fontSize": "15px", "color": COULEUR_SOUS_TITRE, "marginTop": "4px"}))
+    return enfants
 
 
 def fig_vide(message):
@@ -220,7 +221,7 @@ def fig_table(p_df):                                             # tableau : lie
         cells=dict(values=[lieu, commune, t["accidents"], t["graves"], t["tues"]],
                    fill_color="#F5F6F8", align="left", font=dict(size=TAILLE_TEXTE), height=30)))
     style(fig, f"8 lieux : {fr(t['graves'].sum())} accidents graves", sous_titre="Lieux regroupés à ~100 m, classés par gravité")
-    fig.update_layout(margin=dict(l=10, r=10, b=10))
+    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10))
     return fig
 
 
@@ -301,16 +302,22 @@ app.index_string = """<!DOCTYPE html>
 
 PANNEAU = {"position": "relative", "backgroundColor": "white", "border": "1px solid #E0E0E0", "borderRadius": "8px",
            "minHeight": 0, "minWidth": 0, "overflow": "hidden"}
+PANNEAU_GRAPHE = {**PANNEAU, "display": "flex", "flexDirection": "column"}
 REMPLIR = {"position": "absolute", "top": "6px", "left": "6px", "right": "6px", "bottom": "6px"}      # marge intérieure
 CONFIG = {"displayModeBar": False, "responsive": True}
 ETIQUETTE = {"fontWeight": "bold", "fontSize": "13px", "color": "#374151", "display": "block", "marginBottom": "3px"}
-HAUTEUR = "560px"                                                # hauteur fixe d'un panneau : les textes gardent leur taille
+HAUTEUR = "580px"                                                # hauteur fixe d'un panneau : les textes gardent leur taille
 ONGLET = {"padding": "12px 20px", "fontWeight": "bold", "fontSize": "15px", "color": "#374151", "backgroundColor": "#E5E7EB"}
 ONGLET_ACTIF = {**ONGLET, "color": BLEU, "backgroundColor": "white", "borderTop": f"3px solid {BLEU}"}
 
 
-def graphique(identifiant, hauteur=HAUTEUR, **extra):
-    return html.Div(style={**PANNEAU, "height": hauteur, **extra}, children=dcc.Graph(id=identifiant, style=REMPLIR, config=CONFIG))
+def graphique(nom, hauteur=HAUTEUR):
+    """Un panneau = titre HTML (rempli par le callback) + graphique en dessous."""
+    return html.Div(style={**PANNEAU_GRAPHE, "height": hauteur}, children=[
+        html.Div(id=f"t-{nom}", style={"flex": "0 0 auto", "padding": "14px 18px 0 18px"}),
+        html.Div(style={"position": "relative", "flex": "1 1 auto", "minHeight": 0},
+                 children=dcc.Graph(id=f"g-{nom}", style=REMPLIR, config=CONFIG)),
+    ])
 
 
 def grille(colonnes, enfants, lignes=None):
@@ -363,42 +370,52 @@ app.layout = html.Div(
             colors={"primary": BLEU, "background": "#E5E7EB", "border": "#D1D5DB"},
             children=[
                 dcc.Tab(label="Quand ?  Évolution et créneaux", value="quand", style=ONGLET, selected_style=ONGLET_ACTIF,
-                        children=grille("minmax(0, 1fr) minmax(0, 1fr)", [graphique("g-courbe"), graphique("g-heatmap")])),
+                        children=grille("minmax(0, 1fr) minmax(0, 1fr)", [graphique("courbe"), graphique("heatmap")])),
                 dcc.Tab(label="Qui ?  Usagers et gravité", value="qui", style=ONGLET, selected_style=ONGLET_ACTIF,
-                        children=grille("minmax(0, 1fr) minmax(0, 1fr)", [graphique("g-gravite"), graphique("g-nuage")])),
+                        children=grille("minmax(0, 1fr) minmax(0, 1fr)", [graphique("gravite"), graphique("nuage")])),
                 dcc.Tab(label="Où ?  Communes et points noirs", value="ou", style=ONGLET, selected_style=ONGLET_ACTIF,
                         children=grille("minmax(0, 1.25fr) minmax(0, 1fr)", [
                             html.Div(style={**PANNEAU, "gridRow": "1 / span 2"}, children=html.Iframe(
                                 id="carte", srcDoc="", style={**REMPLIR, "width": "calc(100% - 12px)", "height": "calc(100% - 12px)", "border": "none"})),
-                            graphique("g-communes", hauteur="440px"), graphique("g-table", hauteur="440px")],
-                            lignes="440px 440px")),
+                            graphique("communes", hauteur="470px"), graphique("table", hauteur="470px")],
+                            lignes="470px 470px")),
             ]),
     ])
 
 
 # ----------------------------------------------------------------------------
-# Callback : un seul jeu de filtres -> 6 graphiques + chiffres clés + carte
+# Callback : un seul jeu de filtres -> 6 graphiques + 6 titres + chiffres clés + carte
 # ----------------------------------------------------------------------------
-@app.callback(
-    Output("kpi", "children"),
-    Output("g-courbe", "figure"), Output("g-heatmap", "figure"), Output("g-gravite", "figure"),
-    Output("g-communes", "figure"), Output("g-nuage", "figure"), Output("g-table", "figure"),
-    Output("carte", "srcDoc"),
-    Input("filtre-annee", "value"), Input("filtre-dep", "value"),
-    Input("filtre-gravite", "value"), Input("filtre-usager", "value"),
-)
+SORTIES = ([Output("kpi", "children")]
+           + [sortie for nom in IDS_GRAPHES for sortie in (Output(f"g-{nom}", "figure"), Output(f"t-{nom}", "children"))]
+           + [Output("carte", "srcDoc")])
+
+
+def assembler(kpi, figs, carte):
+    """Range les résultats dans l'ordre des Output : kpi, (figure, titre) pour chaque graphique, carte."""
+    resultat = [kpi]
+    for nom in IDS_GRAPHES:
+        resultat += [figs[nom], entete(figs[nom])]
+    resultat.append(carte)
+    return tuple(resultat)
+
+
+@app.callback(*SORTIES,
+              Input("filtre-annee", "value"), Input("filtre-dep", "value"),
+              Input("filtre-gravite", "value"), Input("filtre-usager", "value"))
 def mettre_a_jour(annees, deps, gravite, usager):
     annees = tuple(sorted(a for a in (annees or []) if a in ANNEES))
     deps = tuple(sorted(d for d in (deps or []) if d in DEPARTEMENTS))
     if not annees or not deps:
         vide = fig_vide("Sélectionnez au moins une année et un département")
-        return cartes_kpi({"accidents": 0, "tues": 0, "hospitalises": 0}), vide, vide, vide, vide, vide, vide, CARTE_VIDE
+        return assembler(cartes_kpi({"accidents": 0, "tues": 0, "hospitalises": 0}), {n: vide for n in IDS_GRAPHES}, CARTE_VIDE)
     d = donnees(annees, deps, gravite == "graves", usager or "Tous")
     if d["kpi"]["accidents"] == 0:
         vide = fig_vide("Aucun accident pour ces filtres")
-        return cartes_kpi(d["kpi"]), vide, vide, vide, vide, vide, vide, CARTE_VIDE
-    return (cartes_kpi(d["kpi"]), fig_courbe(d["mois"], list(annees)), fig_heatmap(d["jh"]), fig_gravite(d["gravite"]),
-            fig_communes(d["communes"]), fig_nuage(d["communes"]), fig_table(d["points"]), carte_html(d["points"]))
+        return assembler(cartes_kpi(d["kpi"]), {n: vide for n in IDS_GRAPHES}, CARTE_VIDE)
+    figs = {"courbe": fig_courbe(d["mois"], list(annees)), "heatmap": fig_heatmap(d["jh"]), "gravite": fig_gravite(d["gravite"]),
+            "communes": fig_communes(d["communes"]), "nuage": fig_nuage(d["communes"]), "table": fig_table(d["points"])}
+    return assembler(cartes_kpi(d["kpi"]), figs, carte_html(d["points"]))
 
 
 if __name__ == "__main__":
