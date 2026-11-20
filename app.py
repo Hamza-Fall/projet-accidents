@@ -265,6 +265,126 @@ def carte_html(p_df):
 
 
 # ----------------------------------------------------------------------------
+# Onglet « Agir ? » : de l'analyse à la décision
+# ----------------------------------------------------------------------------
+OBJECTIF = ("Ce tableau de bord sert à décider, pas seulement à observer : il aide le responsable sécurité routière à choisir "
+            "quand renforcer la surveillance, vers quels usagers orienter la prévention, et où sécuriser en priorité.")
+PLAN = [
+    ("Court terme · 0 à 3 mois · Surveiller", "Contrôles et patrouilles sur le créneau et les lieux les plus chargés de la sélection."),
+    ("Moyen terme · 3 à 12 mois · Sécuriser", "Audit de sécurité des points noirs, puis aménagements (carrefours, éclairage, signalisation, vitesses)."),
+    ("Moyen terme · Sensibiliser", "Campagnes ciblées sur les usagers les plus touchés, avant les mois où les accidents augmentent."),
+    ("En continu · Mesurer", "Refaire l'analyse chaque année avec ce tableau de bord : accidents graves, tués pour 100 accidents, part de tués ou hospitalisés."),
+]
+ACTIONS_USAGER = {
+    "Deux-roues motorisé": "campagne auprès des motards et contrôles ciblés (vitesse, casque, équipements).",
+    "Vélo / trottinette": "aménagements cyclables continus et sécurisés, traitement des intersections, sensibilisation.",
+    "Piéton": "sécuriser les passages piétons (éclairage, visibilité) et apaiser les vitesses aux abords.",
+    "Voiture": "contrôles de vitesse et de comportements (ceinture, téléphone au volant) et prévention.",
+    "Utilitaire / poids lourd": "contrôles de vitesse et de temps de conduite, information des transporteurs.",
+    "Autre": "analyser en détail les véhicules concernés avant de choisir une action.",
+}
+NOTE_RECO = ("Ces décisions découlent des chiffres de la sélection affichée (années, départements, gravité et usager choisis en haut de page). "
+             "Les données ne contiennent ni la vitesse pratiquée, ni l'alcoolémie, ni le trafic : elles indiquent où et quand agir, pas pourquoi. "
+             "Chaque décision doit donc être confirmée par un diagnostic local avant d'engager des moyens.")
+
+
+def carte_reco(theme, constat, action):
+    return html.Div(
+        style={"background": "white", "border": "1px solid #E0E0E0", "borderLeft": f"6px solid {BLEU}", "borderRadius": "8px", "padding": "14px 18px"},
+        children=[html.Div(theme, style={"fontSize": "13px", "fontWeight": "bold", "color": BLEU, "textTransform": "uppercase"}),
+                  html.Div(constat, style={"fontSize": "18px", "fontWeight": "bold", "color": "#111827", "marginTop": "6px", "lineHeight": "1.3"}),
+                  html.Div([html.Span("Décision proposée : ", style={"fontWeight": "bold", "color": "#7B1E1E"}), action],
+                           style={"fontSize": "16px", "color": "#374151", "marginTop": "6px", "lineHeight": "1.4"})])
+
+
+def message_reco(texte):
+    return html.Div(texte, style={"padding": "30px", "fontSize": "18px", "color": "#6B7280"})
+
+
+def recommandations(d):
+    cartes = []
+
+    # Quand agir : créneau du pic
+    m = d["jh"].pivot_table(index="jour_semaine", columns="heure", values="accidents", aggfunc="sum").reindex(index=range(7), columns=range(24)).fillna(0).values
+    if m.sum() > 0:
+        jour, heure = np.unravel_index(np.argmax(m), m.shape)
+        nuit = m[:, [22, 23, 0, 1, 2, 3, 4, 5]].sum() / m.sum() * 100
+        weekend = m[[5, 6], :].sum() / m.sum() * 100
+        constat = f"Pic le {JOURS_LONG[jour]} à {heure} h · {fr(nuit)} % des accidents entre 22 h et 6 h · {fr(weekend)} % le week-end"
+        if heure >= 22 or heure < 6:
+            action = "programmer des contrôles d'alcoolémie et de stupéfiants la nuit, avec une présence visible aux abords des lieux de sortie, et vérifier l'éclairage des axes concernés."
+        elif jour < 5 and (7 <= heure <= 9 or 16 <= heure <= 19):
+            action = "programmer des contrôles de vitesse et de respect des feux aux heures de pointe, sur les axes les plus chargés."
+        else:
+            action = "concentrer contrôles et prévention sur ce créneau, puis vérifier qu'il se confirme d'une année à l'autre."
+        if weekend >= 35:
+            action += " Le week-end pèse plus que ses 2 jours sur 7 (29 %) : ajouter des contrôles en soirée."
+        cartes.append(carte_reco("Quand agir", constat, action))
+
+    # Chez qui agir : type d'usager le plus touché
+    g = d["gravite"]
+    p = g[g["gravite"].isin(ORDRE_GRAVITE)].pivot_table(index="type_usager", columns="gravite", values="usagers", aggfunc="sum").fillna(0)
+    p = p.reindex(columns=ORDRE_GRAVITE, fill_value=0)
+    p = p[p.sum(axis=1) >= 50]
+    if not p.empty:
+        part = p.div(p.sum(axis=1), axis=0) * 100
+        touches = part["Tué"] + part["Blessé hospitalisé"]
+        pire = touches.idxmax()
+        cartes.append(carte_reco("Chez qui agir", f"{pire} : {fr(touches.max())} % des usagers tués ou hospitalisés",
+                                 "orienter la prévention vers cet usage : " + ACTIONS_USAGER.get(pire, ACTIONS_USAGER["Autre"])))
+
+    # Où agir : points noirs
+    pts = d["points"].head(3)
+    if not pts.empty:
+        lieux = " · ".join(f"{l if isinstance(l, str) else 'lieu non renseigné'} ({c}) : {g_} graves"
+                           for l, c, g_ in zip(pts["lieu"], pts["commune"], pts["graves"]))
+        cartes.append(carte_reco("Où agir : points noirs", lieux,
+                                 "lancer un audit de sécurité sur site, puis décider d'un aménagement ou de contrôles ciblés (signalisation, carrefour, radar). "
+                                 "L'onglet « Où ? » localise les 300 lieux les plus graves."))
+
+    # Où agir : communes
+    c = d["communes"].copy()
+    par_habitant = bool(c["population"].notna().any())
+    if par_habitant:
+        c = c[c["population"] >= SEUIL_POPULATION].copy()
+        c["valeur"] = c["accidents_graves"] / c["population"] * 100000
+        unite = "accidents graves pour 100 000 habitants"
+    else:
+        c["valeur"] = c["accidents_graves"]
+        unite = "accidents graves"
+    c = c.sort_values("valeur", ascending=False).head(3)
+    if not c.empty:
+        constat = " · ".join(f"{n} : {fr(v, 1 if par_habitant else 0)}" for n, v in zip(c["commune"], c["valeur"])) + f" ({unite})"
+        cartes.append(carte_reco("Où agir : communes", constat,
+                                 "proposer aux communes en tête un plan local de sécurité routière avec l'État et le département "
+                                 "(diagnostic partagé, priorités d'aménagement, calendrier de contrôles)."))
+
+    # Suivre : évolution entre la première et la dernière année
+    mois = d["mois"]
+    annees = sorted(mois["annee"].unique())
+    if len(annees) >= 2:
+        total = mois.groupby("annee")["accidents"].sum()
+        if total[annees[0]] > 0:
+            var = (total[annees[-1]] / total[annees[0]] - 1) * 100
+            cartes.append(carte_reco("Suivre les résultats",
+                                     f"Accidents : {'−' if var < 0 else '+'}{fr(abs(var), 1)} % entre {annees[0]} et {annees[-1]}",
+                                     "fixer un objectif chiffré par territoire et mesurer l'effet des actions avec ce tableau de bord (comparaison avant / après)."))
+
+    objectif = html.Div(OBJECTIF, style={"background": "#EAF1F8", "border": f"1px solid {BLEU}", "borderRadius": "8px", "padding": "14px 18px",
+                                         "fontSize": "17px", "color": BLEU, "fontWeight": "bold", "lineHeight": "1.4"})
+    colonne_gauche = ([objectif, html.Div("Constats et décisions pour la sélection affichée", style={"fontSize": "20px", "fontWeight": "bold", "color": BLEU})]
+                      + cartes + [html.Div(NOTE_RECO, style={"fontSize": "14px", "color": "#6B7280", "fontStyle": "italic", "lineHeight": "1.4"})])
+    colonne_droite = ([html.Div("Plan d'action en trois temps", style={"fontSize": "20px", "fontWeight": "bold", "color": BLEU, "marginBottom": "10px"})]
+                      + [html.Div(style={"marginBottom": "14px"}, children=[
+                          html.Div(titre, style={"fontSize": "16px", "fontWeight": "bold", "color": "#111827"}),
+                          html.Div(texte, style={"fontSize": "15px", "color": "#374151", "marginTop": "2px", "lineHeight": "1.4"})])
+                         for titre, texte in PLAN])
+    return html.Div(style={"display": "grid", "gridTemplateColumns": "minmax(0, 1.6fr) minmax(0, 1fr)", "gap": "16px", "alignItems": "start"}, children=[
+        html.Div(style={"display": "flex", "flexDirection": "column", "gap": "12px"}, children=colonne_gauche),
+        html.Div(style={"background": "white", "border": "1px solid #E0E0E0", "borderRadius": "8px", "padding": "18px 20px"}, children=colonne_droite)])
+
+
+# ----------------------------------------------------------------------------
 # Mise en page : la page défile normalement du haut vers le bas
 # ----------------------------------------------------------------------------
 def cartes_kpi(k):
@@ -364,7 +484,7 @@ app.layout = html.Div(
         # Chiffres clés
         html.Div(id="kpi", style={"display": "flex", "gap": "12px", "flex": "0 0 auto"}),
 
-        # Trois onglets : chacun montre peu de visuels, en grand
+        # Quatre onglets : chacun montre peu de visuels, en grand
         dcc.Tabs(
             id="onglets", value="quand", style={"height": "50px", "flex": "0 0 auto"}, content_style={"paddingTop": "14px"},
             colors={"primary": BLEU, "background": "#E5E7EB", "border": "#D1D5DB"},
@@ -379,24 +499,27 @@ app.layout = html.Div(
                                 id="carte", srcDoc="", style={**REMPLIR, "width": "calc(100% - 12px)", "height": "calc(100% - 12px)", "border": "none"})),
                             graphique("communes", hauteur="470px"), graphique("table", hauteur="470px")],
                             lignes="470px 470px")),
+                dcc.Tab(label="Agir ?  Décisions à prendre", value="agir", style=ONGLET, selected_style=ONGLET_ACTIF,
+                        children=html.Div(id="reco")),
             ]),
     ])
 
 
 # ----------------------------------------------------------------------------
-# Callback : un seul jeu de filtres -> 6 graphiques + 6 titres + chiffres clés + carte
+# Callback : un seul jeu de filtres -> 6 graphiques + 6 titres + chiffres clés + carte + décisions
 # ----------------------------------------------------------------------------
 SORTIES = ([Output("kpi", "children")]
            + [sortie for nom in IDS_GRAPHES for sortie in (Output(f"g-{nom}", "figure"), Output(f"t-{nom}", "children"))]
-           + [Output("carte", "srcDoc")])
+           + [Output("carte", "srcDoc")]
+           + [Output("reco", "children")])
 
 
-def assembler(kpi, figs, carte):
-    """Range les résultats dans l'ordre des Output : kpi, (figure, titre) pour chaque graphique, carte."""
+def assembler(kpi, figs, carte, reco):
+    """Range les résultats dans l'ordre des Output : kpi, (figure, titre) pour chaque graphique, carte, décisions."""
     resultat = [kpi]
     for nom in IDS_GRAPHES:
         resultat += [figs[nom], entete(figs[nom])]
-    resultat.append(carte)
+    resultat += [carte, reco]
     return tuple(resultat)
 
 
@@ -408,14 +531,15 @@ def mettre_a_jour(annees, deps, gravite, usager):
     deps = tuple(sorted(d for d in (deps or []) if d in DEPARTEMENTS))
     if not annees or not deps:
         vide = fig_vide("Sélectionnez au moins une année et un département")
-        return assembler(cartes_kpi({"accidents": 0, "tues": 0, "hospitalises": 0}), {n: vide for n in IDS_GRAPHES}, CARTE_VIDE)
+        return assembler(cartes_kpi({"accidents": 0, "tues": 0, "hospitalises": 0}), {n: vide for n in IDS_GRAPHES}, CARTE_VIDE,
+                         message_reco("Sélectionnez au moins une année et un département."))
     d = donnees(annees, deps, gravite == "graves", usager or "Tous")
     if d["kpi"]["accidents"] == 0:
         vide = fig_vide("Aucun accident pour ces filtres")
-        return assembler(cartes_kpi(d["kpi"]), {n: vide for n in IDS_GRAPHES}, CARTE_VIDE)
+        return assembler(cartes_kpi(d["kpi"]), {n: vide for n in IDS_GRAPHES}, CARTE_VIDE, message_reco("Aucun accident pour ces filtres."))
     figs = {"courbe": fig_courbe(d["mois"], list(annees)), "heatmap": fig_heatmap(d["jh"]), "gravite": fig_gravite(d["gravite"]),
             "communes": fig_communes(d["communes"]), "nuage": fig_nuage(d["communes"]), "table": fig_table(d["points"])}
-    return assembler(cartes_kpi(d["kpi"]), figs, carte_html(d["points"]))
+    return assembler(cartes_kpi(d["kpi"]), figs, carte_html(d["points"]), recommandations(d))
 
 
 if __name__ == "__main__":
